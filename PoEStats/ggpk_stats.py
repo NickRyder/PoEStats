@@ -1,22 +1,38 @@
-from PoEStats.primitive_stat import PrimitiveStat
-from typing import List, Optional
-from RePoE import stat_translations
+from PoEStats.index_handlers import IndexHandler
+from typing import Dict, List, Optional, Tuple
+from RePoE import stat_translations as stat_translations_json
 from RePoE.stat_translations import stat_translations as sub_stat_translations
 from dataclasses import dataclass
 from enum import Enum
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class StatRange:
     min: Optional[int] = None
     max: Optional[int] = None
     negated: Optional[bool] = False
 
     def __init__(self, json):
-
         self.min = json.get("min")
         self.max = json.get("max")
         self.negated = json.get("negated", False)
+
+    def value_in_range(self, value: int) -> bool:
+        """
+        determine if value is in the range represented by self
+        if so return True, else False
+        """
+        if self.min is not None and value < self.min:
+            membership = False
+        elif self.max is not None and value > self.max:
+            membership = False
+        else:
+            membership = True
+
+        if self.negated:
+            return ~membership
+        else:
+            return membership
 
 
 class StatFormat(Enum):
@@ -24,90 +40,143 @@ class StatFormat(Enum):
     SIGNED_NUMBER = "+#"
     IGNORE = "ignore"
 
-
-class StatHandler(Enum):
-    per_minute_to_per_second = "per_minute_to_per_second"
-    divide_by_one_hundred = "divide_by_one_hundred"
-    milliseconds_to_seconds = "milliseconds_to_seconds"
-    multiply_by_four = "multiply_by_four"
-    milliseconds_to_seconds_1dp = "milliseconds_to_seconds_1dp"
-    divide_by_ten_0dp = "divide_by_ten_0dp"
-    mod_value_to_item_class = "mod_value_to_item_class"
-    divide_by_one_hundred_and_negate = "divide_by_one_hundred_and_negate"
-    divide_by_twelve = "divide_by_twelve"
-    times_twenty = "times_twenty"
-    canonical_stat = "canonical_stat"
-    sixty_percent_of_value = "60%_of_value"
-    divide_by_six = "divide_by_six"
-    divide_by_three = "divide_by_three"
-    divide_by_two_0dp = "divide_by_two_0dp"
-    divide_by_five = "divide_by_five"
-    per_minute_to_per_second_0dp = "per_minute_to_per_second_0dp"
-    per_minute_to_per_second_2dp = "per_minute_to_per_second_2dp"
-    thirty_percent_of_value = "30%_of_value"
-    milliseconds_to_seconds_0dp = "milliseconds_to_seconds_0dp"
-    per_minute_to_per_second_2dp_if_required = (
-        "per_minute_to_per_second_2dp_if_required"
-    )
-    negate = "negate"
-    old_leech_permyriad = "old_leech_permyriad"
-    per_minute_to_per_second_1dp = "per_minute_to_per_second_1dp"
-    old_leech_percent = "old_leech_percent"
-    milliseconds_to_seconds_2dp = "milliseconds_to_seconds_2dp"
-    divide_by_twenty_then_double_0dp = "divide_by_twenty_then_double_0dp"
-    divide_by_fifteen_0dp = "divide_by_fifteen_0dp"
-    divide_by_one_hundred_2dp = "divide_by_one_hundred_2dp"
-    deciseconds_to_seconds = "deciseconds_to_seconds"
-    milliseconds_to_seconds_2dp_if_required = "milliseconds_to_seconds_2dp_if_required"
-    multiplicative_permyriad_damage_modifier = (
-        "multiplicative_permyriad_damage_modifier"
-    )
-    multiplicative_damage_modifier = "multiplicative_damage_modifier"
-    tempest_mod_text = "tempest_mod_text"
+    def value_to_string(self, value: float) -> Optional[str]:
+        if self == StatFormat.NUMBER:
+            return str(value)
+        elif self == StatFormat.SIGNED_NUMBER:
+            if value > 0:
+                sign = "+"
+            elif value < 0:
+                sign = "-"
+            else:
+                sign = ""
+            return sign + str(value)
+        elif self == StatFormat.IGNORE:
+            return None
 
 
-@dataclass
+class FormatterError(Exception):
+    """Base class for exceptions in this module."""
+
+    def __init__(self, message):
+        # self.expression = expression
+        self.message = message
+
+
+@dataclass(unsafe_hash=True)
 class StatFormatter:
-    condition: List[StatRange]
-    format: List[str]
-    index_handlers: List[List[str]]
+    condition: Tuple[StatRange]
+    format: Tuple[StatFormat]
+    index_handlers: Tuple[List[IndexHandler]]
     string: str
 
     def __init__(self, json):
-        self.condition = [StatRange(condition) for condition in json["condition"]]
-        self.format = [StatFormat(format) for format in json["format"]]
-        self.index_handlers = [
-            [StatHandler(handler) for handler in handlers]
-            for handlers in json["index_handlers"]
-        ]
+        self.condition = tuple(
+            [StatRange(condition) for condition in json["condition"]]
+        )
+        self.format = tuple([StatFormat(format) for format in json["format"]])
+        self.index_handlers = tuple(
+            [
+                tuple([IndexHandler.from_id(handler) for handler in handlers])
+                for handlers in json["index_handlers"]
+            ]
+        )
         self.string = json["string"]
 
+    def values_to_string(self, values: Tuple[float]):
+        formatted_strings = []
+        for value, condition, format, index_handlers in zip(
+            values, self.condition, self.format, self.index_handlers
+        ):
+            if not condition.value_in_range(value):
+                raise FormatterError(f"Value {value} not in range {condition}")
 
-@dataclass
+            for index_handler in index_handlers:
+                value = index_handler.handler(value)
+
+            formatted_strings.append(format.value_to_string(value))
+
+        translated_string = self.string
+        for idx, formatted_string in enumerate(formatted_strings):
+            if formatted_string is None:
+                assert f"{{{idx}}}" not in translated_string
+            else:
+                translated_string = translated_string.replace(
+                    f"{{{idx}}}", formatted_string
+                )
+        return translated_string
+
+
+@dataclass(unsafe_hash=True)
 class GGPKStatTranslation:
-    ids: List[str]
-    formatters: List[StatFormatter]
+    ids: Tuple[str]
+    formatters: Tuple[StatFormatter]
 
-    def __init__(self, json):
-        self.ids = json["ids"]
-        self.formatters = [
-            StatFormatter(stat_formatter) for stat_formatter in json["English"]
-        ]
+    @classmethod
+    def load(cls, json: dict):
+        return cls(
+            ids=tuple(json["ids"]),
+            formatters=tuple(
+                [StatFormatter(stat_formatter) for stat_formatter in json["English"]]
+            ),
+        )
+
+    def translate(self, id_to_value_dict: Dict[str, int]):
+        values = [id_to_value_dict.get(id, 0) for id in self.ids]
+
+        if all([value == 0 for value in values]):
+            raise FormatterError("No ids from this translation")
+
+        for formatter in self.formatters:
+            try:
+                return formatter.values_to_string(values)
+            except FormatterError:
+                pass
+        raise FormatterError(f"No formatters fit values {id_to_value_dict}")
+
+    def reverse_translate(
+        self,
+    ):
+        pass
 
 
 # grab both the main stat_translations and the sub_stat_translations
-stat_translations_parsed = [GGPKStatTranslation(v) for v in stat_translations] + [
-    GGPKStatTranslation(v)
-    for sub_translations in sub_stat_translations.values()
-    for v in sub_translations
-]
+stat_translations = list(
+    {GGPKStatTranslation.load(v) for v in stat_translations_json}
+    # | {
+    #     GGPKStatTranslation.load(v)
+    #     for sub_translations in sub_stat_translations.values()
+    #     for v in sub_translations
+    # }
+)
 
-# matched_strings = set()
-# for parsed in stat_translations_parsed:
-#     for formatter in parsed.formatters:
-#         match_result = re.findall("(.?\{\d+\}.?)", formatter.string)
-#         if "Delirium Reward Type" in formatter.string:
-#             print(formatter)
-#         if match_result is not None:
-#             matched_strings |= set(match_result)
-# print(matched_strings)
+stat_id_to_stat_translation: Dict[str, GGPKStatTranslation] = {}
+
+for stat_translation in stat_translations:
+    for id in stat_translation.ids:
+        assert id not in stat_id_to_stat_translation
+        stat_id_to_stat_translation[id] = stat_translation
+
+
+if __name__ == "__main__":
+    from RePoE import mods
+    import logging
+
+    for mod in mods.values():
+        print("")
+        mod_id_values = {stat["id"]: stat["min"] for stat in mod["stats"]}
+        lines = 0
+        while mod_id_values:
+            id = next(iter(mod_id_values.keys()))
+            if id in stat_id_to_stat_translation:
+                stat_translation = stat_id_to_stat_translation[id]
+                print(stat_translation.translate(mod_id_values))
+                lines += 1
+                for id in stat_translation.ids:
+                    if id in mod_id_values:
+                        del mod_id_values[id]
+            else:
+                logging.warn(f"Found no stat translation for {id}")
+                del mod_id_values[id]
+        if lines > 1:
+            breakpoint()
