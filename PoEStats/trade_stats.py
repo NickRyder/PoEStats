@@ -40,26 +40,3 @@ stats[
 stats[
     "explicit.stat_723388324"
 ] = "#% chance to Trigger Socketed Spells when\nyou Spend at least # Mana to Use a Skill"
-
-
-@dataclass
-class ExtendedStatRange:
-    min: Optional[int] = None
-    max: Optional[int] = None
-
-
-@dataclass
-class ExtendedStatTranslation:
-    stat_id: str
-    values: Tuple[ExtendedStatRange, ...]
-
-
-# matched_strings = set()
-# for parsed in stats.values():
-#     match_result = re.findall("(.?\#.?)", parsed)
-#     if match_result is not None:
-#         for string in set(match_result):
-#             if string not in matched_strings:
-#                 print(parsed)
-#         matched_strings |= set(match_result)
-# print(matched_strings)
