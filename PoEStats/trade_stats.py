@@ -1,8 +1,4 @@
-import re
-from PoEStats.re_strings import re_hashtag_pattern
 import requests
-from dataclasses import dataclass
-from typing import Optional, Tuple
 
 
 def stats_from_web():
